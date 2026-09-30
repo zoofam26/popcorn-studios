@@ -1,3 +1,4 @@
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -40,12 +41,7 @@ class DetailsScreen extends ConsumerWidget {
                   background: Stack(
                     fit: StackFit.expand,
                     children: <Widget>[
-                      Image.network(
-                        movie.backdropUrl,
-                        fit: BoxFit.cover,
-                        errorBuilder: (_, __, ___) =>
-                            Container(color: AppTheme.surface),
-                      ),
+                      NetworkArt(url: movie.backdropUrl),
                       DecoratedBox(
                         decoration: BoxDecoration(
                           gradient: LinearGradient(
@@ -82,11 +78,10 @@ class DetailsScreen extends ConsumerWidget {
                             padding: const EdgeInsets.only(right: 20),
                             child: ClipRRect(
                               borderRadius: BorderRadius.circular(12),
-                              child: Image.network(
-                                movie.posterUrl,
+                              child: SizedBox(
                                 width: 180,
                                 height: 270,
-                                fit: BoxFit.cover,
+                                child: NetworkArt(url: movie.posterUrl),
                               ),
                             ),
                           ),
@@ -221,7 +216,8 @@ class DetailsScreen extends ConsumerWidget {
                                     backgroundColor: AppTheme.surfaceHigh,
                                     backgroundImage: member.profileUrl.isEmpty
                                         ? null
-                                        : NetworkImage(member.profileUrl),
+                                        : CachedNetworkImageProvider(
+                                            member.profileUrl),
                                     child: member.profileUrl.isEmpty
                                         ? const Icon(Icons.person,
                                             color: AppTheme.textSecondary)
@@ -316,6 +312,7 @@ class _QualitySection extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final AsyncValue<List<QualityOption>> options =
         ref.watch(qualityOptionsProvider(movieId));
+    final bool stillSearching = options.isLoading;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -323,10 +320,19 @@ class _QualitySection extends ConsumerWidget {
         Row(
           children: <Widget>[
             const Text(
-              'Available Downloads',
+              'Available Sources',
               style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800),
             ),
             const Spacer(),
+            if (stillSearching)
+              const Padding(
+                padding: EdgeInsets.only(right: 12),
+                child: SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              ),
             IconButton(
               tooltip: 'Refresh sources',
               icon: const Icon(Icons.refresh, size: 20),
@@ -347,26 +353,54 @@ class _QualitySection extends ConsumerWidget {
                 ),
                 SizedBox(width: 12),
                 Text(
-                  'Searching torrent sources (YTS, PirateBay)…',
+                  'Searching sources…',
                   style: TextStyle(color: AppTheme.textSecondary),
                 ),
               ],
             ),
           ),
           error: (Object e, StackTrace s) => const _RailMessageInline(
-            'Torrent sources are unreachable right now.',
+            'Sources are unreachable right now. Check your connection and '
+            'try again.',
           ),
           data: (List<QualityOption> list) {
-            if (list.isEmpty) {
-              return const _RailMessageInline(
-                'No torrents found for this movie yet. Try again later or '
-                'paste a magnet link from the Downloads screen.',
-              );
-            }
+            final Widget listWidget = list.isEmpty
+                ? (stillSearching
+                    ? const SizedBox.shrink()
+                    : const _RailMessageInline(
+                        'No sources found for this title yet. Try refreshing '
+                        'in a moment.',
+                      ))
+                : Column(
+                    children: <Widget>[
+                      for (final QualityOption option in list)
+                        _QualityTile(option: option, movieId: movieId),
+                    ],
+                  );
+            if (!stillSearching || list.isEmpty) return listWidget;
+            // Stremio-style: results already visible while more load in.
             return Column(
               children: <Widget>[
-                for (final QualityOption option in list)
-                  _QualityTile(option: option, movieId: movieId),
+                listWidget,
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 10),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: <Widget>[
+                      SizedBox(
+                        width: 13,
+                        height: 13,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                      SizedBox(width: 10),
+                      Text(
+                        'Searching more sources…',
+                        style: TextStyle(
+                            color: AppTheme.textSecondary, fontSize: 12.5),
+                      ),
+                    ],
+                  ),
+                ),
               ],
             );
           },
@@ -427,19 +461,6 @@ class _QualityTile extends ConsumerWidget {
               ),
               const SizedBox(width: 10),
               SeedersChip(seeders: t.seeders),
-              const SizedBox(width: 10),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(
-                  color: AppTheme.surfaceHigh,
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: Text(
-                  t.source.label,
-                  style: const TextStyle(
-                      fontSize: 10.5, color: AppTheme.textSecondary),
-                ),
-              ),
               const SizedBox(width: 6),
               const Icon(Icons.chevron_right, color: AppTheme.textSecondary),
             ],

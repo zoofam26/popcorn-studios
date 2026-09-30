@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -84,6 +85,67 @@ class AppShell extends ConsumerWidget {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Catalog artwork
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Cached network artwork with a disk-backed image cache — covers render
+/// instantly after the first fetch (and across restarts), instead of
+/// re-downloading on every screen visit.
+class NetworkArt extends StatelessWidget {
+  const NetworkArt({
+    super.key,
+    required this.url,
+    this.fit = BoxFit.cover,
+    this.width,
+    this.height,
+    this.memCacheWidth,
+    this.fallbackIcon = Icons.movie_outlined,
+  });
+
+  final String url;
+  final BoxFit fit;
+  final double? width;
+  final double? height;
+  final int? memCacheWidth;
+  final IconData fallbackIcon;
+
+  @override
+  Widget build(BuildContext context) {
+    if (url.isEmpty) {
+      return Container(
+        width: width,
+        height: height,
+        color: AppTheme.surfaceHigh,
+        alignment: Alignment.center,
+        child: Icon(fallbackIcon, color: AppTheme.textSecondary),
+      );
+    }
+    return CachedNetworkImage(
+      imageUrl: url,
+      fit: fit,
+      width: width,
+      height: height,
+      memCacheWidth: memCacheWidth,
+      fadeInDuration: const Duration(milliseconds: 220),
+      placeholder: (BuildContext c, String u) => Container(
+        color: AppTheme.surfaceHigh,
+        alignment: Alignment.center,
+        child: const SizedBox(
+          width: 18,
+          height: 18,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+      ),
+      errorWidget: (BuildContext c, String u, Object e) => Container(
+        color: AppTheme.surfaceHigh,
+        alignment: Alignment.center,
+        child: Icon(fallbackIcon, color: AppTheme.textSecondary),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Poster cards & rails
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -123,29 +185,9 @@ class PosterCard extends StatelessWidget {
                           ),
                         ),
                       )
-                    : Image.network(
-                        movie.posterUrl,
-                        fit: BoxFit.cover,
-                        loadingBuilder:
-                            (BuildContext c, Widget w, ImageChunkEvent? p) =>
-                                Container(
-                          color: AppTheme.surfaceHigh,
-                          child: const Center(
-                            child: SizedBox(
-                              width: 18,
-                              height: 18,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            ),
-                          ),
-                        ),
-                        errorBuilder:
-                            (BuildContext c, Object e, StackTrace? s) =>
-                                Container(
-                          color: AppTheme.surfaceHigh,
-                          alignment: Alignment.center,
-                          child: const Icon(Icons.movie_outlined,
-                              color: AppTheme.textSecondary),
-                        ),
+                    : NetworkArt(
+                        url: movie.posterUrlW342,
+                        memCacheWidth: 400,
                       ),
               ),
             ),

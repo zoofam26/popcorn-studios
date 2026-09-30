@@ -13,9 +13,16 @@ class AppConstants {
   static const String openSubtitlesBaseUrl =
       'https://api.opensubtitles.com/api/v1';
   static const String openSubtitlesApiKey = 'tW8f2Of8mxchIgsx9VWOiNC9l0xyLY8K';
-  static const String openSubtitlesUserAgent = 'PopcornStudio v1.0.0';
+  static const String openSubtitlesUserAgent = 'PopcornStudio v1.1.0';
 
-  // ── Torrent providers ───────────────────────────────────────────────────
+  // ── Stream providers (Stremio-style addons) ─────────────────────────────
+  /// Torrentio — the stream addon used by Stremio (aggregates ThePirateBay+,
+  /// YTS+, 1337x+, RARBG, TorrentGalaxy, MagnetDL and more). One request per
+  /// IMDb id returns every known release with hash + exact file index.
+  static const List<String> stremioBaseUrls = <String>[
+    'https://torrentio.strem.fun',
+  ];
+
   /// apibay.org is The Pirate Bay's official JSON API. It sits behind a
   /// Cloudflare rule that rejects non-browser user agents — a Chrome UA is
   /// enough to receive clean JSON (verified 2026-09).
@@ -37,11 +44,12 @@ class AppConstants {
   static const String itorrentsTemplate =
       'https://itorrents.org/torrent/%HASH%.torrent';
 
-  // ── BitTorrent engine tuning ────────────────────────────────────────────
+  // ── Streaming engine tuning ────────────────────────────────────────
   /// aria2 is rarest-first by default; head/tail prioritisation is the lever
   /// that makes streaming start quickly (head covers MP4 moov / MKV index,
-  /// tail covers MKV Cues / moov-at-end MP4s).
-  static const String prioritizePiece = 'head=32M,tail=8M';
+  /// tail covers MKV Cues / moov-at-end MP4s). Generous head = smoother
+  /// startup and fewer stalls right after the first frames.
+  static const String prioritizePiece = 'head=64M,tail=16M';
 
   /// Extra trackers merged into every magnet we build (improves peer
   /// discovery for magnets that ship with few or dead trackers).
@@ -64,8 +72,9 @@ class AppConstants {
   /// player when it seeks into undownloaded regions).
   static const int streamStartBufferBytes = 8 * 1024 * 1024;
   static const int streamStartBufferTimeoutSec = 20;
-  static const int streamStallTimeoutSec = 60;
-  static const int streamPollIntervalMs = 300;
+  static const int streamStallTimeoutSec = 90;
+  static const int streamPollIntervalMs = 250;
+  static const int streamChunkBytes = 1024 * 1024;
 
   // ── File type classification ────────────────────────────────────────────
   static const Set<String> videoExtensions = <String>{
@@ -95,5 +104,8 @@ class AppConstants {
   };
 
   static const String appTitle = 'Popcorn Studio';
-  static const String appVersion = '1.0.0';
+  static const String appVersion = '1.1.0';
+
+  /// Launch-screen tagline.
+  static const String splashTagline = 'Every story deserves a front-row seat.';
 }

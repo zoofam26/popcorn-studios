@@ -75,9 +75,9 @@ class _DownloadsScreenState extends ConsumerState<DownloadsScreen> {
       floatingActionButton: engine.hasValue
           ? FloatingActionButton.extended(
               backgroundColor: AppTheme.accent,
-              onPressed: () => _showAddMagnetDialog(context, ref),
+              onPressed: () => _showAddLinkDialog(context, ref),
               icon: const Icon(Icons.add_link),
-              label: const Text('Paste magnet'),
+              label: const Text('Paste link'),
             )
           : null,
       body: engine.when(
@@ -113,7 +113,7 @@ class _DownloadsScreenState extends ConsumerState<DownloadsScreen> {
                     SizedBox(height: 12),
                     Text(
                       'No downloads yet.\nPick a movie from Home or paste a '
-                      'magnet link.',
+                      'link here.',
                       textAlign: TextAlign.center,
                       style: TextStyle(color: AppTheme.textSecondary),
                     ),
@@ -133,7 +133,7 @@ class _DownloadsScreenState extends ConsumerState<DownloadsScreen> {
     );
   }
 
-  Future<void> _showAddMagnetDialog(
+  Future<void> _showAddLinkDialog(
     BuildContext context,
     WidgetRef ref,
   ) async {
@@ -141,13 +141,13 @@ class _DownloadsScreenState extends ConsumerState<DownloadsScreen> {
     final String? input = await showDialog<String>(
       context: context,
       builder: (BuildContext dialogContext) => AlertDialog(
-        title: const Text('Add from magnet or .torrent URL'),
+        title: const Text('Add from link'),
         content: TextField(
           controller: controller,
           autofocus: true,
           maxLines: 3,
           decoration: const InputDecoration(
-            hintText: 'magnet:?xt=urn:btih:…  or  https://…/file.torrent',
+            hintText: 'Paste link here',
           ),
         ),
         actions: <Widget>[
@@ -168,16 +168,17 @@ class _DownloadsScreenState extends ConsumerState<DownloadsScreen> {
 
     try {
       final TorrentFacade facade = await ref.read(engineReadyProvider.future);
-      final bool isTorrentUrl = input.startsWith('http');
+      final bool isSourceUrl = input.startsWith('http');
       final PreparedTorrent prepared = await facade.prepare(
-        magnetUri: isTorrentUrl ? null : input,
-        torrentUrl: isTorrentUrl ? input : null,
+        magnetUri: isSourceUrl ? null : input,
+        torrentUrl: isSourceUrl ? input : null,
+        friendlyTitle: _titleFromLink(input),
       );
       if (!mounted) return;
 
       List<int> selected;
       if (prepared.videoFiles.isEmpty) {
-        _snack('No video files found inside this torrent.', error: true);
+        _snack('No playable video was found in this source.', error: true);
         return;
       } else if (prepared.videoFiles.length == 1) {
         selected = <int>[prepared.videoFiles.first.index];
@@ -199,6 +200,31 @@ class _DownloadsScreenState extends ConsumerState<DownloadsScreen> {
     }
   }
 
+  /// Best-effort human title from a pasted link (used until the engine
+  /// resolves the real name).
+  String _titleFromLink(String input) {
+    final String lower = input.toLowerCase();
+    if (lower.startsWith('magnet:')) {
+      final RegExpMatch? dn =
+          RegExp(r'[?&]dn=([^&]+)').firstMatch(input);
+      if (dn != null) {
+        final String dnValue = Uri.decodeComponent(dn.group(1)!);
+        if (dnValue.trim().isNotEmpty) {
+          return dnValue.replaceAll(RegExp(r'[._]'), ' ').trim();
+        }
+      }
+      return 'Shared download';
+    }
+    if (lower.startsWith('http')) {
+      final String file = input.split('/').last;
+      return file
+          .replaceAll(RegExp(r'\.(torrent|mp4|mkv|avi)$', caseSensitive: false), '')
+          .replaceAll(RegExp(r'[._%20+]'), ' ')
+          .trim();
+    }
+    return 'Shared download';
+  }
+
   void _snack(String message, {bool error = false}) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -214,6 +240,21 @@ class _TaskCard extends ConsumerWidget {
   const _TaskCard({required this.task});
 
   final TorrentTask task;
+
+  /// Raw identifiers never appear in the UI — links and hashes collapse
+  /// into a neutral label, release names get tidied up.
+  String get _prettyName {
+    final String name = task.displayName;
+    if (name.startsWith('magnet:') ||
+        RegExp(r'^[0-9a-fA-F]{40}$').hasMatch(name)) {
+      return 'Shared download';
+    }
+    // If the engine only resolved a technical name, tidy it up a little.
+    if (name.length > 4 && RegExp(r'[._]').hasMatch(name)) {
+      return name.replaceAll(RegExp(r'[._]'), ' ').trim();
+    }
+    return name;
+  }
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -236,7 +277,7 @@ class _TaskCard extends ConsumerWidget {
             children: <Widget>[
               Expanded(
                 child: Text(
-                  task.displayName,
+                  _prettyName,
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
@@ -311,7 +352,7 @@ class _TaskCard extends ConsumerWidget {
                     extra: PlayerArgs(
                       gid: task.gid,
                       fileIndex: videos.first.index,
-                      title: task.displayName,
+                      title: _prettyName,
                       tmdbId: task.tmdbId,
                       posterUrl: task.posterUrl,
                     ),
@@ -364,7 +405,7 @@ class _TaskCard extends ConsumerWidget {
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: <Widget>[
-              Text(task.displayName,
+              Text(_prettyName,
                   style: const TextStyle(fontWeight: FontWeight.w700)),
               const SizedBox(height: 12),
               CheckboxListTile(

@@ -96,6 +96,11 @@ class Movie {
   String get posterUrl =>
       posterPath == null ? '' : '${AppConstants.tmdbImageBase}/w500$posterPath';
 
+  /// Lighter poster variant for cards/rails — faster to fetch in bulk.
+  String get posterUrlW342 => posterPath == null
+      ? ''
+      : '${AppConstants.tmdbImageBase}/w342$posterPath';
+
   String get backdropUrl => backdropPath == null
       ? ''
       : '${AppConstants.tmdbImageBase}/w1280$backdropPath';
@@ -177,10 +182,11 @@ class MovieDetail {
 // Torrent models
 // ─────────────────────────────────────────────────────────────────────────────
 
-enum TorrentSource { yts, apibay, piratebayApi, manual }
+enum TorrentSource { torrentio, yts, apibay, piratebayApi, manual }
 
 extension TorrentSourceX on TorrentSource {
   String get label => switch (this) {
+        TorrentSource.torrentio => 'Torrentio',
         TorrentSource.yts => 'YTS',
         TorrentSource.apibay => 'ThePirateBay',
         TorrentSource.piratebayApi => 'PirateBay API',
@@ -198,6 +204,8 @@ class TorrentInfo {
     required this.source,
     this.magnetUri,
     this.torrentUrl,
+    this.fileIdx,
+    this.videoFileName,
     this.tpbNumericId,
     this.quality,
     this.uploadedAt,
@@ -212,6 +220,13 @@ class TorrentInfo {
   final TorrentSource source;
   final String? magnetUri;
   final String? torrentUrl;
+
+  /// Zero-based index of the video file inside the bundle, when the source
+  /// provides it (Stremio-style stream addons do).
+  final int? fileIdx;
+
+  /// Exact video file name inside the bundle, when the source provides it.
+  final String? videoFileName;
 
   /// Numeric PirateBay torrent id (enables the apibay f.php file list API).
   final int? tpbNumericId;
@@ -263,6 +278,19 @@ class EngineFile {
       fileName.contains('.') ? fileName.split('.').last.toLowerCase() : '';
   bool get isVideo => AppConstants.videoExtensions.contains(extension);
   bool get isSubtitle => AppConstants.subtitleExtensions.contains(extension);
+
+  /// Presentation-friendly name: release tags and separators cleaned up.
+  String get prettyName {
+    String base = fileName.isEmpty ? '' : fileName;
+    if (base.contains('.')) {
+      final String ext = base.split('.').last;
+      if (ext.length <= 4) base = base.substring(0, base.length - ext.length - 1);
+    }
+    return base
+        .replaceAll(RegExp(r'[._]'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+  }
 }
 
 class TorrentTask {

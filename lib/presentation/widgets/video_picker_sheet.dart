@@ -4,8 +4,8 @@ import '../../core/theme.dart';
 import '../../core/utils/format.dart';
 import '../../domain/models.dart';
 
-/// Lists every video file inside a torrent so the user can choose what to
-/// download/stream (multi-video torrents, movie packs, etc).
+/// Lists every video file inside a source bundle so the user can choose
+/// what to download/stream (multi-video bundles, collections, etc).
 class VideoPickerSheet extends StatefulWidget {
   const VideoPickerSheet({super.key, required this.videos});
 
@@ -37,14 +37,14 @@ class _VideoPickerSheetState extends State<VideoPickerSheet> {
           const Padding(
             padding: EdgeInsets.fromLTRB(20, 0, 20, 4),
             child: Text(
-              'Videos in this torrent',
+              'Videos in this source',
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
             ),
           ),
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
             child: Text(
-              'This torrent contains ${widget.videos.length} videos. '
+              'This source contains ${widget.videos.length} videos. '
               'Pick what you want to stream or download.',
               style: const TextStyle(
                   color: AppTheme.textSecondary, fontSize: 12.5),
@@ -63,7 +63,9 @@ class _VideoPickerSheetState extends State<VideoPickerSheet> {
                       setState(() => _selected[video.index] = value ?? false),
                   controlAffinity: ListTileControlAffinity.leading,
                   title: Text(
-                    video.fileName,
+                    video.prettyName.isEmpty
+                        ? video.fileName
+                        : video.prettyName,
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(fontSize: 13.5),

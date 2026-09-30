@@ -41,27 +41,41 @@ final Provider<SettingsStore> settingsStoreProvider =
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Boots the engine exactly once; screens await [engineReadyProvider].
+///
+/// The boot sequence is wrapped in hard timeouts so a wedged platform
+/// channel, filesystem or engine process can never hang a screen forever:
+/// failures surface as a normal provider error with a retry affordance.
 final FutureProvider<TorrentFacade> engineReadyProvider =
     FutureProvider<TorrentFacade>((Ref ref) async {
   final PlatformBindings bindings = PlatformBindings();
-  final String? nativeLibDir = await bindings.nativeLibraryDir();
+  final String? nativeLibDir = await bindings
+      .nativeLibraryDir()
+      .timeout(const Duration(seconds: 6), onTimeout: () => null);
 
   final EnginePaths paths = await buildEnginePaths(
     nativeLibraryDir: nativeLibDir,
-  );
+  ).timeout(const Duration(seconds: 10));
   final Aria2Engine engine = Aria2Engine(paths: paths);
   final TorrentFacade facade = TorrentFacade(
     engine: engine,
     taskStore: SharedPrefsTaskStore(),
   );
 
-  final AppSettings settings = await ref.read(settingsStoreProvider).load();
-  await facade.start(
-    maxOverallDownloadLimit: settings.maxOverallSpeedBytesPerSec <= 0
-        ? '0'
-        : '${settings.maxOverallSpeedBytesPerSec}',
-    seedRatio: settings.seedRatio.toStringAsFixed(2),
-  );
+  AppSettings settings = const AppSettings();
+  try {
+    settings = await ref.read(settingsStoreProvider).load();
+  } catch (_) {}
+  try {
+    await facade.start(
+      maxOverallDownloadLimit: settings.maxOverallSpeedBytesPerSec <= 0
+          ? '0'
+          : '${settings.maxOverallSpeedBytesPerSec}',
+      seedRatio: settings.seedRatio.toStringAsFixed(2),
+    ).timeout(const Duration(seconds: 25));
+  } on Exception {
+    await facade.stop();
+    rethrow;
+  }
   ref.onDispose(() {
     facade.stop();
   });
@@ -124,16 +138,27 @@ final searchProvider = FutureProvider.family<List<Movie>, String>(
 final movieDetailProvider = FutureProvider.family<MovieDetail, int>(
     (Ref ref, int id) => ref.watch(tmdbServiceProvider).movieDetail(id));
 
-/// Quality options for the details screen — depends on the resolved movie
-/// (title/year/imdb).
+/// Quality options for the details screen — Stremio-style progressive
+/// loading: the stream emits as each source answers, so results appear
+/// within seconds while the remaining catalogs are still in flight.
 final qualityOptionsProvider =
-    FutureProvider.family<List<QualityOption>, int>((Ref ref, int id) async {
+    StreamProvider.family<List<QualityOption>, int>((Ref ref, int id) async* {
   final MovieDetail detail = await ref.watch(movieDetailProvider(id).future);
-  return ref.watch(torrentSearchProvider).findOptionsForMovie(
-        title: detail.movie.title,
-        year: detail.movie.releaseYear,
-        imdbId: detail.imdbId,
-      );
+  bool emitted = false;
+  await for (final List<QualityOption> options
+      in ref.watch(torrentSearchProvider).streamOptionsForMovie(
+            title: detail.movie.title,
+            year: detail.movie.releaseYear,
+            imdbId: detail.imdbId,
+          )) {
+    // Always emit at least once so the UI can distinguish "nothing found"
+    // from "still searching".
+    if (options.isNotEmpty || !emitted) {
+      emitted = true;
+      yield options;
+    }
+  }
+  if (!emitted) yield const <QualityOption>[];
 });
 
 /// Subtitles for a movie (player).

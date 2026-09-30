@@ -186,11 +186,7 @@ class _HeroSlide extends StatelessWidget {
       child: Stack(
         fit: StackFit.expand,
         children: <Widget>[
-          Image.network(
-            movie.backdropUrl,
-            fit: BoxFit.cover,
-            errorBuilder: (_, __, ___) => Container(color: AppTheme.surface),
-          ),
+          NetworkArt(url: movie.backdropUrl),
           DecoratedBox(
             decoration: BoxDecoration(
               gradient: LinearGradient(

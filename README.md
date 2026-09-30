@@ -1,15 +1,16 @@
 # Popcorn Studio
 
-**A Netflix-style movie discovery app that streams and downloads films over BitTorrent — watch while you download.**
+**A Netflix-style movie discovery app that streams and downloads films from public sources — watch while you download.**
 
 Popcorn Studio is a Flutter application for **Android, Linux (generic + Debian) and Windows**.
-It ships **no content**: it aggregates open metadata (TMDB), public torrent indexers
-(YTS, ThePirateBay via apibay), a battle-tested C++ download engine (aria2) and free
-subtitle sources (OpenSubtitles) into one polished experience.
+It ships **no content**: it aggregates open metadata (TMDB), public media catalogs
+(Torrentio — the stream source used by Stremio — plus YTS and ThePirateBay via apibay),
+a battle-tested C++ download engine (aria2) and free subtitle sources (OpenSubtitles)
+into one polished experience.
 
-> **Legal notice** — Popcorn Studio is a general-purpose BitTorrent client. You are
-> responsible for streaming and downloading only content you have the right to access
-> under your local laws.
+> **Legal notice** — Popcorn Studio pulls media from public third-party sources and
+> ships no content of its own. You are responsible for streaming and downloading only
+> material you have the right to access under your local laws.
 
 ## Features
 
@@ -17,20 +18,22 @@ subtitle sources (OpenSubtitles) into one polished experience.
   navigation (bottom bar on mobile, rail on desktop).
 - **Rich movie catalog** — trending / popular / top-rated / in-theaters rails,
   search, cast, trailers and similar titles powered by the TMDB API.
-- **Quality chooser** — for every movie, all available sources (YTS + PirateBay)
-  are de-duplicated and grouped into per-quality options (480p → 2160p) with
-  **file size, seed health and provider** so you pick exactly what you want.
-- **Watch while downloading (FDM-style)** — torrents are downloaded with
-  head/tail piece prioritisation (`head=32M,tail=8M`) and served to the player
-  through a local HTTP server with full `Range` / `206 Partial Content`
-  semantics. Playback starts within seconds; seeks into undownloaded regions
-  stall gracefully until the bytes arrive.
-- **Multi-video torrents** — when a magnet contains several videos (packs,
+- **Quality chooser (Stremio-style loading)** — for every movie, all available
+  sources (Torrentio + YTS + PirateBay) are de-duplicated and grouped into
+  per-quality options (480p → 2160p) with **file size, availability and provider**.
+  Results appear progressively as each source answers — you can start in seconds.
+- **Watch while downloading (FDM-style)** — sources are downloaded with
+  head/tail piece prioritisation (`head=64M,tail=16M`) and served to the player
+  through a local HTTP server with full `Range` / `206 Partial Content` semantics
+  and **piece-accurate availability tracking** (bitfield-based), so playback is
+  smooth and never serves unfinished data. Playback starts within seconds;
+  seeks into undownloaded regions stall gracefully until the bytes arrive.
+- **Multi-video sources** — when a source bundle contains several videos (packs,
   collections), every video file is listed and you choose what to stream.
-- **Subtitles** — torrent-embedded `.srt/.ass/.vtt` tracks plus automatic
-  OpenSubtitles lookup by TMDB id, switchable from the player.
+- **Subtitles** — embedded `.srt/.ass/.vtt` tracks plus automatic OpenSubtitles
+  lookup by TMDB id, switchable from the player.
 - **Robust engine** — bundled static **aria2 1.37.0** (C++) controlled over
-  JSON-RPC, DHT enabled, extra trackers injected into every magnet, session
+  JSON-RPC, DHT enabled, extra trackers injected into every source link, session
   persistence across restarts, pause/resume/remove.
 
 ## Architecture

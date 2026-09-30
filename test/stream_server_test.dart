@@ -203,4 +203,125 @@ void main() {
     expect(response.statusCode, 200);
     expect(String.fromCharCodes(bytes), contains('00:00:01,000'));
   });
+
+  group('piece-accurate availability (bitfield)', () {
+    // Helper mapping completed piece indexes into the aria2 hex bitfield
+    // format (4 pieces per hex char, MSB first, padded to whole bytes).
+    String bitfield(int numPieces, Set<int> complete) {
+      final int nibbles = (numPieces + 3) ~/ 4;
+      final int padded = nibbles.isOdd ? nibbles + 1 : nibbles;
+      final StringBuffer out = StringBuffer();
+      for (int i = 0; i < padded * 4; i += 4) {
+        int nibble = 0;
+        for (int b = 0; b < 4; b++) {
+          if (complete.contains(i + b)) nibble |= 1 << (3 - b);
+        }
+        out.write(nibble.toRadixString(16));
+      }
+      return out.toString();
+    }
+
+    test('maps byte positions to pieces correctly', () {
+      const int pieceLength = 1024;
+      final StreamFileStatus s = StreamFileStatus(
+        filePath: '/x/movie.bin',
+        totalLength: 4096,
+        completedLength: 2048,
+        pieceLength: pieceLength,
+        fileStartOffset: 0,
+        bitfieldHex: bitfield(4, <int>{0, 1}),
+        numPieces: 4,
+      );
+
+      expect(s.hasByte(0), isTrue);
+      expect(s.hasByte(1023), isTrue);
+      expect(s.hasByte(1024), isTrue);
+      expect(s.hasByte(2047), isTrue);
+      // Piece 2 is not complete despite completedLength >= 2048+ bytes
+      // possibly being scattered.
+      expect(s.hasByte(2048), isFalse);
+      expect(s.hasByte(4095), isFalse);
+
+      expect(s.incompleteFrom(0), 2048);
+      expect(s.incompleteFrom(1500), 2048);
+      // Byte 3000 sits inside the incomplete piece 2 → nothing contiguous
+      // from there yet.
+      expect(s.incompleteFrom(3000), 3000);
+    });
+
+    test('honours fileStartOffset for multi-file bundles', () {
+      const int pieceLength = 1024;
+      // Second file of a bundle: bytes live in absolute pieces 2 and 3.
+      final StreamFileStatus s = StreamFileStatus(
+        filePath: '/x/second.bin',
+        totalLength: 2048,
+        completedLength: 0,
+        pieceLength: pieceLength,
+        fileStartOffset: 2048,
+        bitfieldHex: bitfield(4, <int>{0, 1, 2}),
+        numPieces: 4,
+      );
+
+      // Absolute piece 2 (file bytes 0..1023) is complete.
+      expect(s.hasByte(0), isTrue);
+      expect(s.hasByte(1023), isTrue);
+      // Absolute piece 3 is not.
+      expect(s.hasByte(1024), isFalse);
+      expect(s.incompleteFrom(0), 1024);
+    });
+
+    test('falls back to completedLength when no bitfield exists', () {
+      final StreamFileStatus s = StreamFileStatus(
+        filePath: '/x/movie.bin',
+        totalLength: 4096,
+        completedLength: 1500,
+      );
+      expect(s.hasByte(1499), isTrue);
+      expect(s.hasByte(1500), isFalse);
+      expect(s.incompleteFrom(0), 1500);
+    });
+
+    test('server only streams bytes inside completed pieces', () async {
+      const int pieceLength = 1024;
+      final File file = await writeFile('movie.bin', 4096);
+      // Scattered completion: pieces 0 and 2 done, 1 and 3 missing. The
+      // naive completedLength counter would claim 2048 contiguous bytes.
+      StreamFileStatus? current;
+      Future<StreamFileStatus?> provider(String gid, int idx) async =>
+          current ??= StreamFileStatus(
+            filePath: file.path,
+            totalLength: 4096,
+            completedLength: 3072,
+            pieceLength: pieceLength,
+            fileStartOffset: 0,
+            bitfieldHex: bitfield(4, <int>{0, 2}),
+            numPieces: 4,
+          );
+      final StreamServer pieceServer = StreamServer(
+        statusProvider: provider,
+        pollInterval: const Duration(milliseconds: 20),
+        startBufferBytes: 8,
+        startBufferTimeout: const Duration(milliseconds: 400),
+        stallTimeout: const Duration(milliseconds: 400),
+        chunkSize: 512,
+      );
+      await pieceServer.start();
+      addTearDown(pieceServer.dispose);
+
+      final HttpClient client = HttpClient();
+      final HttpClientRequest request = await client
+          .open('GET', '127.0.0.1', pieceServer.port, '/video/g1/1');
+      request.headers.set('Range', 'bytes=0-1023');
+      final HttpClientResponse response = await request.close();
+      final List<int> bytes = await response
+          .fold<List<int>>(<int>[], (List<int> a, List<int> b) => a..addAll(b));
+      client.close();
+
+      // The response must stop at the end of piece 0 — never leap across
+      // the missing piece 1 into piece 2's bytes (which a naive
+      // completedLength frontier would have served).
+      expect(response.statusCode, 206);
+      expect(bytes, (await file.readAsBytes()).sublist(0, 1024));
+    });
+  });
 }

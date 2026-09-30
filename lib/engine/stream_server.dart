@@ -8,25 +8,108 @@ import '../core/errors.dart';
 
 /// Snapshot of a file inside an active download, used by the stream server
 /// to decide what can be served immediately and what must be waited for.
+///
+/// When [bitfieldHex] is present the server maps byte positions to piece
+/// indexes and only serves bytes that belong to fully downloaded pieces —
+/// the download frontier is piece-accurate instead of the (scattered)
+/// completed-bytes counter, which prevents stutter and corruption when the
+/// engine fills pieces out of order.
 class StreamFileStatus {
-  const StreamFileStatus({
+  StreamFileStatus({
     required this.filePath,
     required this.totalLength,
     required this.completedLength,
+    this.pieceLength,
+    this.fileStartOffset = 0,
+    this.bitfieldHex,
+    this.numPieces,
   });
 
   final String filePath;
   final int totalLength;
 
-  /// Bytes that belong to fully downloaded pieces — always safe to read.
+  /// Bytes of this file that belong to fully completed pieces.
   final int completedLength;
+
+  /// Torrent piece length in bytes (when known).
+  final int? pieceLength;
+
+  /// Absolute byte offset of this file inside the whole download — needed
+  /// to translate file positions into piece indexes.
+  final int fileStartOffset;
+
+  /// aria2 bitfield: one hex character per 4 pieces (`1` = complete).
+  final String? bitfieldHex;
+
+  final int? numPieces;
+
+  Uint8List? _bits;
+
+  bool get _hasBitfield =>
+      bitfieldHex != null &&
+      bitfieldHex!.isNotEmpty &&
+      pieceLength != null &&
+      pieceLength! > 0;
+
+  bool _pieceComplete(int index) {
+    final Uint8List? bits = _bits ??= _decodeBitfield(bitfieldHex!);
+    if (bits == null) return false;
+    final int byte = index >> 3;
+    if (byte >= bits.length) return false;
+    return (bits[byte] >> (7 - (index & 7))) & 1 == 1;
+  }
+
+  static Uint8List? _decodeBitfield(String hex) {
+    final int len = hex.length;
+    if (len.isOdd) return null;
+    final Uint8List out = Uint8List(len ~/ 2);
+    for (int i = 0; i < out.length; i++) {
+      final int? v = int.tryParse(hex.substring(i * 2, i * 2 + 2), radix: 16);
+      if (v == null) return null;
+      out[i] = v;
+    }
+    return out;
+  }
+
+  /// Returns true when the byte at file position [pos] lives inside a fully
+  /// downloaded piece.
+  bool hasByte(int pos) {
+    if (pos < 0 || pos >= totalLength) return false;
+    if (!_hasBitfield) return pos < completedLength;
+    return _pieceComplete((fileStartOffset + pos) ~/ pieceLength!);
+  }
+
+  /// The first file-space position >= [pos] that is NOT yet downloaded —
+  /// in other words, the length of the contiguous downloaded run starting
+  /// at [pos]. Returns `totalLength` when everything from [pos] onward is
+  /// available.
+  int incompleteFrom(int pos) {
+    if (!_hasBitfield) return min(completedLength, totalLength);
+    if (pos >= totalLength) return totalLength;
+    final int pieceLen = pieceLength!;
+    int piece = (fileStartOffset + pos) ~/ pieceLen;
+    if (!_pieceComplete(piece)) {
+      // The byte at [pos] itself lives in an incomplete piece.
+      return pos;
+    }
+    final int? total = numPieces;
+    while (total == null || piece < total) {
+      if (!_pieceComplete(piece)) {
+        final int pieceStartAbs = piece * pieceLen;
+        final int filePos = pieceStartAbs - fileStartOffset;
+        return max(pos, min(filePos, totalLength));
+      }
+      piece++;
+    }
+    return totalLength;
+  }
 }
 
 /// Local HTTP server that streams partially-downloaded files with proper
 /// `Accept-Ranges` / `206 Partial Content` semantics.
 ///
 /// This replicates the "watch while downloading" behaviour popularised by
-/// FDM / peerflix:
+/// FDM / Stremio:
 ///   1. The player opens `http://127.0.0.1:<port>/video/<gid>/<fileIndex>`
 ///      and issues byte-range requests like any HTTP video source.
 ///   2. For ranges that are already on disk we serve straight from the file.
@@ -46,7 +129,7 @@ class StreamServer {
     this.stallTimeout = const Duration(
       seconds: AppConstants.streamStallTimeoutSec,
     ),
-    this.chunkSize = 256 * 1024,
+    this.chunkSize = AppConstants.streamChunkBytes,
   });
 
   /// Resolves the current file status for an active download. Throwing or
@@ -148,7 +231,7 @@ class StreamServer {
     }
 
     final int total = status.totalLength;
-    Range? parsedRange = _parseRange(
+    final Range? parsedRange = _parseRange(
       request.headers.value(HttpHeaders.rangeHeader),
       total,
     );
@@ -165,8 +248,7 @@ class StreamServer {
 
     // Gate the response on availability: at playback start we wait for the
     // head buffer; on a seek we wait until the first requested byte exists.
-    final int available = await statusProvider(gid, fileIndex)
-        .then((StreamFileStatus? s) => s?.completedLength ?? 0);
+    final int available = status.incompleteFrom(range.start);
     final bool isInitialRequest = range.start == 0;
     final int target =
         isInitialRequest ? _min(startBufferBytes, total) : range.start + 1;
@@ -176,11 +258,13 @@ class StreamServer {
         gid,
         fileIndex,
         target,
+        startPos: range.start,
         budget: isInitialRequest ? startBufferTimeout : stallTimeout,
       );
       // Re-read the frontier: bytes may have arrived during the wait.
-      final int nowAvailable = await statusProvider(gid, fileIndex)
-          .then((StreamFileStatus? s) => s?.completedLength ?? 0);
+      final int nowAvailable = (await statusProvider(gid, fileIndex))
+              ?.incompleteFrom(range.start) ??
+          0;
       final bool haveStartByte = nowAvailable > range.start;
       if (!ready && !haveStartByte && !isInitialRequest) {
         // Seek into an undownloaded region — ask the player to retry.
@@ -257,9 +341,10 @@ class StreamServer {
         try {
           final StreamFileStatus? status =
               await statusProvider(range.gid, range.fileIndex);
-          final int frontier = status?.completedLength ?? 0;
+          // Piece-accurate contiguous frontier from the current position.
+          final int frontier = status?.incompleteFrom(pos) ?? 0;
 
-          if (frontier != lastProgressBytes) {
+          if (frontier > lastProgressBytes) {
             lastProgressBytes = frontier;
             lastProgressAt = DateTime.now();
           } else if (DateTime.now().difference(lastProgressAt) > stallTimeout) {
@@ -300,6 +385,7 @@ class StreamServer {
     String gid,
     int fileIndex,
     int target, {
+    required int startPos,
     required Duration budget,
   }) async {
     final DateTime deadline = DateTime.now().add(budget);
@@ -307,11 +393,9 @@ class StreamServer {
     while (DateTime.now().isBefore(deadline)) {
       try {
         final StreamFileStatus? status = await statusProvider(gid, fileIndex);
-        final int available = status?.completedLength ?? 0;
-        if (available >= target) return true;
-        if (status != null &&
-            status.totalLength > 0 &&
-            available >= status.totalLength) {
+        if (status == null) return false;
+        final int available = status.incompleteFrom(startPos);
+        if (available >= target || available >= status.totalLength) {
           return true;
         }
         lastSeen = available;

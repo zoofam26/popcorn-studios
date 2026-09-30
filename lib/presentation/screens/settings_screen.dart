@@ -6,8 +6,8 @@ import '../../core/theme.dart';
 import '../providers/app_providers.dart';
 import '../../domain/models.dart';
 
-/// Settings: subtitle preferences, bandwidth limits, seeding policy,
-/// engine diagnostics and legal notice.
+/// Settings: subtitle preferences, bandwidth limits, sharing policy,
+/// playback engine diagnostics and legal notice.
 class SettingsScreen extends ConsumerWidget {
   const SettingsScreen({super.key});
 
@@ -140,7 +140,7 @@ class SettingsScreen extends ConsumerWidget {
                   children: <Widget>[
                     const Expanded(
                       child: Text(
-                        'Seeding after completion',
+                        'Share back after completion',
                         style: TextStyle(fontWeight: FontWeight.w700),
                       ),
                     ),
@@ -174,7 +174,7 @@ class SettingsScreen extends ConsumerWidget {
               title: const Text('Start playing while downloading',
                   style: TextStyle(fontWeight: FontWeight.w700)),
               subtitle: const Text(
-                'Open the player right after a torrent is added. '
+                'Open the player right after a download is added. '
                 'You can always watch from Downloads later.',
                 style: TextStyle(fontSize: 12.5),
               ),
@@ -185,7 +185,7 @@ class SettingsScreen extends ConsumerWidget {
             ),
           ),
           const SizedBox(height: 20),
-          _SectionHeader('Engine'),
+          _SectionHeader('Playback engine'),
           const SizedBox(height: 6),
           FutureBuilder<String>(
             future: _engineInfo(ref),
@@ -228,11 +228,11 @@ class SettingsScreen extends ConsumerWidget {
                 ),
                 const SizedBox(height: 8),
                 const Text(
-                  'Popcorn Studio is a BitTorrent media client. It ships no '
-                  'content: you are responsible for streaming and '
-                  'downloading only material you have the right to access '
-                  'under your local laws. Metadata by TMDB, subtitles by '
-                  'OpenSubtitles.',
+                  'Popcorn Studio pulls media from public third-party '
+                  'sources and ships no content of its own: you are '
+                  'responsible for streaming and downloading only material '
+                  'you have the right to access under your local laws. '
+                  'Metadata by TMDB, subtitles by OpenSubtitles.',
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     fontSize: 12,
@@ -253,12 +253,12 @@ class SettingsScreen extends ConsumerWidget {
       final engine = await ref.read(engineReadyProvider.future);
       final String version = await engine.rpc.getVersion();
       final String port = '${engine.streamServer.port}';
-      return 'aria2 engine: v$version\n'
-          'Streaming server: 127.0.0.1:$port\n'
-          'Piece strategy: ${AppConstants.prioritizePiece} '
-          '(head-first streaming)';
+      return 'Playback engine: v$version\n'
+          'Local player server: 127.0.0.1:$port\n'
+          'Fast-start: enabled (head-first buffering)';
     } catch (e) {
-      return 'Engine offline: $e';
+      return 'Playback engine offline. Open the Downloads tab and tap '
+          'retry to start it.';
     }
   }
 

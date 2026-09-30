@@ -50,7 +50,7 @@ class TorrentFacade {
   TorrentFacade({
     required Aria2Engine engine,
     required this.taskStore,
-    this.metadataTimeout = const Duration(minutes: 4),
+    this.metadataTimeout = const Duration(minutes: 2),
     this.pollInterval = const Duration(milliseconds: 600),
     HttpClient? httpClient,
   })  : _engine = engine,
@@ -70,6 +70,12 @@ class TorrentFacade {
   final Map<String, TaskRecord> _records = <String, TaskRecord>{};
   final StreamController<List<TorrentTask>> _tasksController =
       StreamController<List<TorrentTask>>.broadcast();
+
+  /// Short-lived cache of piece status per download — the player opens
+  /// several parallel range connections and each would otherwise hammer
+  /// the engine RPC with the same request.
+  final Map<String, _CachedPieceStatus> _pieceStatusCache =
+      <String, _CachedPieceStatus>{};
 
   static const List<String> _statusKeys = <String>[
     'gid',
@@ -121,6 +127,9 @@ class TorrentFacade {
 
   /// Resolves metadata for a magnet or .torrent source and returns the file
   /// listing. No media is downloaded yet.
+  ///
+  /// [friendlyTitle] is used as the display name in the Downloads screen so
+  /// users see the movie title instead of raw source identifiers.
   Future<PreparedTorrent> prepare({
     String? magnetUri,
     String? torrentUrl,
@@ -128,13 +137,14 @@ class TorrentFacade {
     int? tmdbId,
     String? posterUrl,
     String? qualityLabel,
+    String? friendlyTitle,
     void Function(String stage)? onStage,
   }) async {
     final String downloadDir = _engine.paths.downloadDir;
-    onStage?.call('Resolving torrent…');
+    onStage?.call('Locating source…');
 
     if (torrentBytes == null && torrentUrl != null) {
-      onStage?.call('Fetching .torrent file…');
+      onStage?.call('Reading source details…');
       torrentBytes = await _downloadTorrentFile(torrentUrl);
     }
 
@@ -145,10 +155,11 @@ class TorrentFacade {
         tmdbId: tmdbId,
         posterUrl: posterUrl,
         qualityLabel: qualityLabel,
+        friendlyTitle: friendlyTitle,
       );
     }
     if (magnetUri == null || magnetUri.isEmpty) {
-      throw const AppException('No magnet or torrent file provided');
+      throw const AppException('No source link provided');
     }
     return _prepareFromMagnet(
       magnetUri,
@@ -156,6 +167,7 @@ class TorrentFacade {
       tmdbId: tmdbId,
       posterUrl: posterUrl,
       qualityLabel: qualityLabel,
+      friendlyTitle: friendlyTitle,
       onStage: onStage,
     );
   }
@@ -166,6 +178,7 @@ class TorrentFacade {
     int? tmdbId,
     String? posterUrl,
     String? qualityLabel,
+    String? friendlyTitle,
   }) async {
     final String gid = await rpc.addTorrent(
       bytes,
@@ -173,7 +186,10 @@ class TorrentFacade {
     );
     final Map<String, dynamic> status = await _waitUntilFilesReady(gid);
     final String infoHash = (status['infoHash'] as String?) ?? '';
-    final String name = _displayName(status) ?? 'Torrent $infoHash';
+    final String name = _displayName(status) ??
+        (friendlyTitle?.isNotEmpty ?? false
+            ? friendlyTitle!
+            : (infoHash.isEmpty ? 'Download' : 'Download $infoHash'));
 
     final String torrentPath = await _persistTorrentBytes(infoHash, bytes);
     return PreparedTorrent(
@@ -196,9 +212,10 @@ class TorrentFacade {
     int? tmdbId,
     String? posterUrl,
     String? qualityLabel,
+    String? friendlyTitle,
     void Function(String stage)? onStage,
   }) async {
-    onStage?.call('Reading torrent metadata…');
+    onStage?.call('Reading source details…');
     final String gid = await rpc.addUri(
       <String>[magnetUri],
       options: <String, String>{
@@ -231,11 +248,16 @@ class TorrentFacade {
     }
 
     final String infoHash = (status['infoHash'] as String?) ?? '';
-    final String name = _displayName(status) ?? magnetUri;
+    // Never surface the raw link as a title — fall back to the friendly
+    // movie title, then the resolved source name.
+    final String name = _displayName(status) ??
+        (friendlyTitle?.isNotEmpty ?? false
+            ? friendlyTitle!
+            : (infoHash.isEmpty ? 'Download' : 'Download $infoHash'));
 
     // Locate the saved .torrent written by bt-save-metadata.
     final String savedTorrentPath =
-        '${downloadDir}/${infoHash.toUpperCase()}.torrent';
+        '$downloadDir/${infoHash.toUpperCase()}.torrent';
     List<int>? bytes;
     if (File(savedTorrentPath).existsSync()) {
       bytes = await File(savedTorrentPath).readAsBytes();
@@ -249,8 +271,8 @@ class TorrentFacade {
     }
     if (bytes == null) {
       throw const EngineException(
-        'Metadata resolved but no .torrent could be stored for file '
-        'selection. Try again or use a direct magnet with trackers.',
+        'Source details resolved but could not be stored for file '
+        'selection. Try again in a moment.',
       );
     }
 
@@ -330,7 +352,7 @@ class TorrentFacade {
     final File torrentFile = File(record.torrentFilePath);
     if (!await torrentFile.exists()) {
       throw EngineException(
-        'Torrent metadata for "${record.displayName}" is missing on disk',
+        'Source details for "${record.displayName}" are missing on disk',
       );
     }
     final String gid = await rpc.addTorrent(
@@ -433,20 +455,51 @@ class TorrentFacade {
     }
   }
 
-  /// Resolves file status for the [StreamServer] (conservative: only bytes
-  /// belonging to fully completed pieces are reported as available).
+  /// Resolves file status for the [StreamServer]: piece-accurate availability
+  /// (bitfield-based) so bytes are only served when their pieces are fully
+  /// downloaded — no stutter or corruption from scattered piece completion.
   Future<StreamFileStatus?> _fileStatus(String gid, int fileIndex) async {
-    final List<Map<String, dynamic>> files = await rpc.getFiles(gid);
+    final DateTime now = DateTime.now();
+    final _CachedPieceStatus? cached = _pieceStatusCache[gid];
+    Map<String, dynamic> pieceInfo;
+    List<Map<String, dynamic>> files;
+    if (cached != null && now.isBefore(cached.expiresAt)) {
+      pieceInfo = cached.pieceInfo;
+      files = cached.files;
+    } else {
+      files = await rpc.getFiles(gid);
+      pieceInfo = await rpc.tellStatus(gid, keys: const <String>[
+        'pieceLength',
+        'numPieces',
+        'bitfield',
+      ]);
+      _pieceStatusCache[gid] = _CachedPieceStatus(
+        pieceInfo: pieceInfo,
+        files: files,
+        expiresAt: now.add(const Duration(milliseconds: 250)),
+      );
+    }
+
+    int fileStartOffset = 0;
+    Map<String, dynamic>? target;
     for (final Map<String, dynamic> file in files) {
       if ('${file['index']}' == '$fileIndex') {
-        return StreamFileStatus(
-          filePath: file['path'] as String,
-          totalLength: int.tryParse('${file['length']}') ?? 0,
-          completedLength: int.tryParse('${file['completedLength']}') ?? 0,
-        );
+        target = file;
+        break;
       }
+      fileStartOffset += int.tryParse('${file['length']}') ?? 0;
     }
-    return null;
+    if (target == null) return null;
+
+    return StreamFileStatus(
+      filePath: target['path'] as String,
+      totalLength: int.tryParse('${target['length']}') ?? 0,
+      completedLength: int.tryParse('${target['completedLength']}') ?? 0,
+      pieceLength: int.tryParse('${pieceInfo['pieceLength']}'),
+      numPieces: int.tryParse('${pieceInfo['numPieces']}'),
+      bitfieldHex: pieceInfo['bitfield'] as String?,
+      fileStartOffset: fileStartOffset,
+    );
   }
 
   /// Direct access for the UI: current engine files of a task.
@@ -481,7 +534,7 @@ class TorrentFacade {
                 statusStr == 'error')) {
           if (statusStr == 'error') {
             throw EngineException(
-              'Torrent reported an error: '
+              'The source reported an error: '
               '${status['errorMessage'] ?? 'unknown'}',
             );
           }
@@ -489,14 +542,14 @@ class TorrentFacade {
         }
       } on RpcException catch (e) {
         if (e.message.contains('is not found')) {
-          throw EngineException('Torrent vanished before metadata arrived');
+          throw EngineException('The source disappeared before it could be read');
         }
       }
       await Future<void>.delayed(pollInterval);
     }
     throw const MetadataTimeoutException(
-      'Could not fetch torrent metadata in time. The swarm may be cold — '
-      'try another torrent or add trackers.',
+      'This source took too long to respond. Try another version or check '
+      'your connection.',
     );
   }
 
@@ -679,4 +732,18 @@ class TorrentFacade {
       _tasksController.add(tasks);
     }
   }
+}
+
+/// Short-lived cache entry for piece status, shared across the player's
+/// parallel range connections.
+class _CachedPieceStatus {
+  const _CachedPieceStatus({
+    required this.pieceInfo,
+    required this.files,
+    required this.expiresAt,
+  });
+
+  final Map<String, dynamic> pieceInfo;
+  final List<Map<String, dynamic>> files;
+  final DateTime expiresAt;
 }

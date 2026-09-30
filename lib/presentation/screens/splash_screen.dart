@@ -1,13 +1,20 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import '../providers/app_providers.dart';
+import '../../core/constants.dart';
 import '../../core/theme.dart';
+import '../../engine/torrent_facade.dart';
+import '../providers/app_providers.dart';
 
-/// Branded launch screen: warms up the download engine while the logo fades
-/// in, then lands on Home. Engine failures never block navigation — the
-/// Downloads screen surfaces them with a retry affordance.
+/// Branded launch screen.
+///
+/// It never waits on the download engine: the engine warms up in the
+/// background while the intro plays, and any failure surfaces on the
+/// Downloads screen with a retry affordance. This keeps cold starts fast
+/// and immune to platform-specific engine issues.
 class SplashScreen extends ConsumerStatefulWidget {
   const SplashScreen({super.key});
 
@@ -19,7 +26,7 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
     with SingleTickerProviderStateMixin {
   late final AnimationController _controller = AnimationController(
     vsync: this,
-    duration: const Duration(milliseconds: 900),
+    duration: const Duration(milliseconds: 1100),
   )..forward();
 
   @override
@@ -29,12 +36,14 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
   }
 
   Future<void> _bootstrap() async {
-    try {
-      await ref.read(engineReadyProvider.future);
-    } catch (_) {
-      // Engine errors are surfaced on the Downloads screen with retry.
-    }
-    await Future<void>.delayed(const Duration(milliseconds: 500));
+    // Warm the engine without ever blocking navigation.
+    unawaited(
+      ref.read(engineReadyProvider.future).then<void>(
+            (TorrentFacade _) {},
+            onError: (Object _) {},
+          ),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 2400));
     if (mounted) {
       context.go('/');
     }
@@ -56,13 +65,19 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: <Widget>[
-              ClipRRect(
-                borderRadius: BorderRadius.circular(28),
-                child: Image.asset(
-                  'assets/images/app_icon.png',
-                  width: 128,
-                  height: 128,
-                  fit: BoxFit.cover,
+              ScaleTransition(
+                scale: CurvedAnimation(
+                  parent: _controller,
+                  curve: Curves.easeOutBack,
+                ),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(28),
+                  child: Image.asset(
+                    'assets/images/app_icon.png',
+                    width: 128,
+                    height: 128,
+                    fit: BoxFit.cover,
+                  ),
                 ),
               ),
               const SizedBox(height: 24),
@@ -83,12 +98,16 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
                   ],
                 ),
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 10),
               const Text(
-                'Stream while you download',
-                style: TextStyle(color: AppTheme.textSecondary),
+                AppConstants.splashTagline,
+                style: TextStyle(
+                  color: AppTheme.textSecondary,
+                  fontStyle: FontStyle.italic,
+                  fontSize: 14.5,
+                ),
               ),
-              const SizedBox(height: 32),
+              const SizedBox(height: 36),
               const SizedBox(
                 width: 26,
                 height: 26,

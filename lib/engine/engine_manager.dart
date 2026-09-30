@@ -168,8 +168,12 @@ class Aria2Engine {
           '--enable-dht=true',
           '--enable-dht6=false',
           '--listen-port=$btPort',
-          '--bt-max-peers=120',
-          '--bt-request-peer-speed-limit=10M',
+          '--bt-max-peers=140',
+          '--bt-request-peer-speed-limit=15M',
+          '--dht-entry-point=dht.transmissionbt.com:6881',
+          '--dht-entry-point=router.bittorrent.com:6881',
+          '--dht-entry-point=dht.libtorrent.org:25401',
+          '--bt-tracker=${AppConstants.defaultTrackers.join(',')}',
           '--dht-file-path=${paths.configDir}${Platform.pathSeparator}dht.dat',
           '--save-session=${paths.sessionFilePath}',
           '--save-session-interval=15',
@@ -229,11 +233,12 @@ class Aria2Engine {
       );
     }
 
-    // Health-check the RPC endpoint.
+    // Health-check the RPC endpoint (fail fast — the UI never blocks on
+    // this; it only makes the Downloads screen show a retry state).
     final Aria2RpcClient client = Aria2RpcClient(port: rpcPort, secret: secret);
     _rpc = client;
     bool healthy = false;
-    for (int attempt = 0; attempt < 60; attempt++) {
+    for (int attempt = 0; attempt < 40; attempt++) {
       try {
         await client.getVersion();
         healthy = true;

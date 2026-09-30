@@ -1,23 +1,35 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import '../domain/models.dart';
 import 'apibay_provider.dart';
 import 'release_parser.dart';
+import 'stremio_streams_provider.dart';
 import 'yts_provider.dart';
 
-/// Aggregates results from every torrent provider, de-duplicates by info
+/// Aggregates results from every stream provider, de-duplicates by info
 /// hash and groups them into per-quality options so the details screen can
 /// present a clean `480p / 720p / 1080p / 2160p` chooser with sizes and
 /// seed counts.
+///
+/// Providers, in order of coverage:
+///   1. Torrentio (the Stremio stream addon — aggregates ThePirateBay+,
+///      YTS+, 1337x+, RARBG and more) — queried by IMDb id, returns the
+///      exact video file index inside every bundle.
+///   2. YTS (by IMDb id, then free text).
+///   3. apibay / The Pirate Bay (free text).
 class TorrentSearchService {
   TorrentSearchService({
     YtsProvider? yts,
     ApibayProvider? apibay,
+    StremioStreamProvider? stremio,
   })  : _yts = yts ?? YtsProvider(),
-        _apibay = apibay ?? ApibayProvider();
+        _apibay = apibay ?? ApibayProvider(),
+        _stremio = stremio ?? StremioStreamProvider();
 
   final YtsProvider _yts;
   final ApibayProvider _apibay;
+  final StremioStreamProvider _stremio;
 
   /// Finds every quality option available for a movie.
   ///
@@ -30,12 +42,16 @@ class TorrentSearchService {
   }) async {
     final List<TorrentInfo> all = <TorrentInfo>[];
 
+    // Stremio-style addon: the widest coverage, exact file indexes.
     if (imdbId != null && imdbId.isNotEmpty) {
       try {
-        all.addAll(await _yts.search(imdbId: imdbId));
+        all.addAll(await _stremio.streamsForImdb(imdbId));
       } catch (_) {
         // Provider down or blocked — continue with the others.
       }
+      try {
+        all.addAll(await _yts.search(imdbId: imdbId));
+      } catch (_) {}
     }
     final String query = year == null || year == 0 ? title : '$title $year';
     try {
@@ -46,6 +62,47 @@ class TorrentSearchService {
     } catch (_) {}
 
     return groupIntoQualityOptions(all,
+        preferredTitle: title, preferredYear: year);
+  }
+
+  /// Progressive variant of [findOptionsForMovie] — Stremio-style loading.
+  /// Emits the growing option list as each provider answers, so the UI can
+  /// render results seconds before the slowest provider settles.
+  Stream<List<QualityOption>> streamOptionsForMovie({
+    required String title,
+    int? year,
+    String? imdbId,
+  }) async* {
+    final List<TorrentInfo> all = <TorrentInfo>[];
+    final String query = year == null || year == 0 ? title : '$title $year';
+
+    Future<void> add(Future<List<TorrentInfo>> future) async {
+      try {
+        all.addAll(await future);
+      } catch (_) {}
+    }
+
+    // The addon usually answers first — surface it immediately.
+    if (imdbId != null && imdbId.isNotEmpty) {
+      await add(_stremio.streamsForImdb(imdbId));
+      if (all.isNotEmpty) {
+        yield groupIntoQualityOptions(all,
+            preferredTitle: title, preferredYear: year);
+      }
+      // YTS by IMDb lands next.
+      await add(_yts.search(imdbId: imdbId));
+      if (all.isNotEmpty) {
+        yield groupIntoQualityOptions(all,
+            preferredTitle: title, preferredYear: year);
+      }
+    }
+
+    // Slow general catalogs run concurrently; emit when both settle.
+    await Future.wait(<Future<void>>[
+      add(_yts.search(queryTerm: query)),
+      add(_apibay.search(query)),
+    ]);
+    yield groupIntoQualityOptions(all,
         preferredTitle: title, preferredYear: year);
   }
 

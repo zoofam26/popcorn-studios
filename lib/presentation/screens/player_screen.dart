@@ -237,7 +237,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
               const Padding(
                 padding: EdgeInsets.all(16),
                 child: Text(
-                  'No subtitles found yet. Torrent-embedded and OpenSubtitles '
+                  'No subtitles found yet. Embedded and OpenSubtitles '
                   'tracks appear here automatically.',
                   style: TextStyle(color: AppTheme.textSecondary),
                 ),

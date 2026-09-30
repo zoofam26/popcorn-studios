@@ -36,6 +36,17 @@ android {
             signingConfig = signingConfigs.getByName("debug")
         }
     }
+
+    packaging {
+        // The download engine binary is bundled as a "library"
+        // (libpopcornaria2.so) and executed from the app's nativeLibraryDir.
+        // Without legacy packaging the APK keeps .so files page-aligned
+        // inside the archive and nothing is extracted to disk, so the
+        // binary is missing at runtime and the engine can never start.
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
 }
 
 kotlin {

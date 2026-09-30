@@ -33,8 +33,8 @@ Future<void> showQualitySheet(
           ),
           const SizedBox(height: 4),
           const Text(
-            'Every source is listed with size and seed health. You can '
-            'start streaming before the download completes.',
+            'Every source is listed with size and availability. You can '
+            'start watching before the download completes.',
             style: TextStyle(color: AppTheme.textSecondary, fontSize: 12.5),
           ),
           const SizedBox(height: 14),
@@ -72,8 +72,8 @@ Future<void> showQualitySheet(
   );
 }
 
-/// Full torrent lifecycle for one chosen source:
-///   resolve metadata → (multi-video picker) → start download → player.
+/// Full playback lifecycle for one chosen source:
+///   resolve details → (multi-video picker) → start download → player.
 Future<void> showQualityFlow(
   BuildContext context,
   WidgetRef ref,
@@ -97,7 +97,7 @@ Future<void> showQualityFlow(
   }
 
   final ValueNotifier<String> stage =
-      ValueNotifier<String>('Contacting torrent sources…');
+      ValueNotifier<String>('Finding sources…');
   bool sentToBackground = false;
 
   final Future<void> flow = _runFlow(
@@ -116,7 +116,7 @@ Future<void> showQualityFlow(
     builder: (BuildContext dialogContext) => PopScope<bool>(
       canPop: false,
       child: AlertDialog(
-        title: const Text('Preparing torrent'),
+        title: const Text('Preparing playback'),
         content: ValueListenableBuilder<String>(
           valueListenable: stage,
           builder: (BuildContext c, String s, _) => Column(
@@ -170,6 +170,7 @@ Future<void> _runFlow(
       tmdbId: detail.movie.id,
       posterUrl: detail.movie.posterUrl,
       qualityLabel: torrent.quality,
+      friendlyTitle: _friendlyTitle(detail.movie, torrent),
       onStage: (String s) => stage.value = s,
     );
   } catch (e) {
@@ -177,7 +178,7 @@ Future<void> _runFlow(
     if (!backgroundRequested()) {
       navigator.pop();
     }
-    _showSnack(context, 'Could not resolve torrent: $e', error: true);
+    _showSnack(context, 'Could not prepare this source: $e', error: true);
     return;
   }
 
@@ -190,15 +191,28 @@ Future<void> _runFlow(
   if (torrentData.videoFiles.isEmpty) {
     _showSnack(
       context,
-      'No video files found inside this torrent.',
+      'No playable video was found in this source. Try another quality.',
       error: true,
     );
     return;
   }
 
-  // Single video → straight to action; multiple → let the user pick.
+  // Resolve the video to play. When the source tells us the exact file
+  // (Stremio-style addons do), match it directly — no picker needed. With
+  // several videos inside one bundle the user chooses.
   List<int> selected;
-  if (torrentData.videoFiles.length == 1) {
+  final String? expected = torrent.videoFileName;
+  final EngineFile? exactMatch = expected == null
+      ? null
+      : torrentData.videoFiles.cast<EngineFile?>().firstWhere(
+          (EngineFile? f) =>
+              f != null &&
+              f.fileName.toLowerCase() == expected.toLowerCase(),
+          orElse: () => null,
+        );
+  if (exactMatch != null) {
+    selected = <int>[exactMatch.index];
+  } else if (torrentData.videoFiles.length == 1) {
     selected = <int>[torrentData.videoFiles.first.index];
   } else {
     final List<int>? picked = await showModalBottomSheet<List<int>>(
@@ -247,4 +261,13 @@ void _showSnack(BuildContext context, String message, {bool error = false}) {
       backgroundColor: error ? AppTheme.danger.withValues(alpha: 0.9) : null,
     ),
   );
+}
+
+/// The title shown in the Downloads screen: movie name (+ year), falling
+/// back to the cleaned release name — never a raw link.
+String _friendlyTitle(Movie movie, TorrentInfo torrent) {
+  final String base =
+      movie.releaseYear > 0 ? '${movie.title} (${movie.releaseYear})' : movie.title;
+  if (base.trim().isNotEmpty) return base;
+  return torrent.name.replaceAll(RegExp(r'[._]'), ' ').trim();
 }
