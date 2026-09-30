@@ -1,0 +1,52 @@
+name: popcorn_studio
+description: >-
+  Popcorn Studio — a Netflix-style movie discovery app that streams and
+  downloads films over BitTorrent with watch-while-downloading support,
+  rich metadata from TMDB and subtitles from OpenSubtitles.
+publish_to: "none"
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # State management & routing
+  flutter_riverpod: ^3.4.3
+  go_router: ^18.0.2
+
+  # Networking
+  http: ^1.6.0
+
+  # Media playback (libmpv / C++ based engine under the hood)
+  media_kit: ^1.2.6
+  media_kit_video: ^2.0.1
+  media_kit_libs_video: ^1.0.7
+
+  # Storage & paths
+  path_provider: ^2.1.6
+  shared_preferences: ^2.5.5
+
+  # UI
+  cached_network_image: ^4.0.3
+  window_manager: ^0.5.2
+  url_launcher: ^6.3.2
+
+  # Utilities
+  archive: ^4.3.0
+  crypto: ^3.0.7
+  intl: ^0.20.3
+  collection: ^1.19.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.4
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/images/

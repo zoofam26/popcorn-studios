@@ -1,0 +1,181 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  FLUTTER_VERSION: "3.47.5"
+  ARIA2_VERSION: "1.37.0"
+
+jobs:
+  build-android:
+    name: Android APKs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Bundle aria2 engine binaries (per-ABI)
+        run: |
+          BASE=https://github.com/devgianlu/aria2-android/releases/download/v${{ env.ARIA2_VERSION }}
+          mkdir -p android/app/src/main/jniLibs
+          declare -A MAP=(
+            ["arm64-v8a"]="aria2c-arm64-v8a"
+            ["armeabi-v7a"]="aria2-armeabi-v7a"
+            ["x86_64"]="aria2c-x86_64"
+            ["x86"]="aria2c-x86"
+          )
+          for abi in arm64-v8a armeabi-v7a x86_64 x86; do
+            mkdir -p android/app/src/main/jniLibs/$abi
+            curl -sL --retry 3 -o android/app/src/main/jniLibs/$abi/libpopcornaria2.so \
+              "$BASE/${MAP[$abi]}"
+            chmod +x android/app/src/main/jniLibs/$abi/libpopcornaria2.so
+            file android/app/src/main/jniLibs/$abi/libpopcornaria2.so | grep -q ELF || {
+              echo "::error::Downloaded $abi binary is not ELF"; exit 1; }
+          done
+
+      - name: Generate app icons
+        run: dart run flutter_launcher_icons
+
+      - name: Build split APKs
+        run: |
+          flutter pub get
+          flutter build apk --release --split-per-abi
+
+      - name: Rename artifacts
+        run: |
+          mkdir -p dist
+          for abi in arm64-v8a armeabi-v7a x86_64 x86; do
+            SRC=build/app/outputs/flutter-apk/app-$abi-release.apk
+            [ -f "$SRC" ] && cp "$SRC" dist/PopcornStudio-$abi.apk
+          done
+          ls -la dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: dist/*.apk
+
+  build-linux:
+    name: Linux + Debian
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libgtk-3-dev liblzma-dev pkg-config
+
+      - name: Generate app icons
+        run: dart run flutter_launcher_icons
+
+      - name: Build Linux bundle
+        run: |
+          flutter pub get
+          flutter build linux --release
+
+      - name: Bundle aria2 engine binary
+        run: |
+          curl -sL --retry 3 -o aria2.zip \
+            https://github.com/abcfy2/aria2-static-build/releases/download/${{ env.ARIA2_VERSION }}/aria2-x86_64-linux-musl_static.zip
+          unzip -o aria2.zip
+          mkdir -p build/linux/x64/release/bundle/engine
+          chmod +x aria2c
+          cp aria2c build/linux/x64/release/bundle/engine/aria2c
+
+      - name: Package tar.gz and .deb
+        run: bash scripts/package_deb.sh "$(grep '^version:' pubspec.yaml | awk '{print $2}' | cut -d+ -f1)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: |
+            dist/*.tar.gz
+            dist/*.deb
+
+  build-windows:
+    name: Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Generate app icons
+        run: dart run flutter_launcher_icons
+
+      - name: Build Windows app
+        run: |
+          flutter pub get
+          flutter build windows --release
+
+      - name: Bundle aria2 engine binary
+        shell: pwsh
+        run: |
+          curl -sL -o aria2.zip https://github.com/abcfy2/aria2-static-build/releases/download/${{ env.ARIA2_VERSION }}/aria2-x86_64-w64-mingw32_static.zip
+          Expand-Archive -Path aria2.zip -DestinationPath aria2_out -Force
+          $exe = Get-ChildItem -Recurse -Filter aria2c.exe -Path aria2_out | Select-Object -First 1
+          New-Item -ItemType Directory -Force -Path build/windows/x64/runner/Release/engine
+          Copy-Item $exe.FullName build/windows/x64/runner/Release/engine/aria2c.exe
+          Get-Item build/windows/x64/runner/Release/engine/aria2c.exe | Select-Object Length
+
+      - name: Archive release
+        shell: pwsh
+        run: |
+          Compress-Archive -Path build/windows/x64/runner/Release/* `
+            -DestinationPath PopcornStudio-windows-x64.zip
+          Get-Item PopcornStudio-windows-x64.zip | Select-Object Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: PopcornStudio-windows-x64.zip
+
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-android, build-linux, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Flatten artifacts
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name "*.apk" -o -name "*.zip" -o -name "*.tar.gz" -o -name "*.deb" \) \
+            -exec cp {} release/ \;
+          ls -la release
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true

@@ -1,0 +1,30 @@
+# Flutter / Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+build/
+pubspec.lock
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Platform build intermediates
+android/.gradle/
+android/local.properties
+android/key.properties
+**/android/app/.cxx/
+ios/ (not used)
+*.log
+
+# Engine binaries are downloaded by CI — never commit
+**/jniLibs/**/*.so
+**/engine/aria2c*
+windows/engine/
+linux/engine/
+
+# Misc
+*.bak
+.DS_Store
