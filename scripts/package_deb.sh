@@ -62,7 +62,7 @@ Version: ${VERSION}
 Section: video
 Priority: optional
 Architecture: amd64
-Depends: libgtk-3-0, libstdc++6, libc6
+Depends: libgtk-3-0, libmpv2 | libmpv1, libstdc++6, libc6
 Maintainer: Popcorn Studio <popcorn@zoofam.dev>
 Description: Netflix-style movie discovery, streaming and downloads over BitTorrent
  Popcorn Studio browses TMDB metadata, lists every available torrent quality
