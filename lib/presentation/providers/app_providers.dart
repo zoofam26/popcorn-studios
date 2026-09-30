@@ -8,6 +8,7 @@ import '../../data/settings_store.dart';
 import '../../data/tmdb_service.dart';
 import '../../data/torrent_search_service.dart';
 import '../../data/opensubtitles_service.dart';
+import '../../data/update_service.dart';
 import '../../domain/models.dart';
 import '../../engine/engine_manager.dart';
 import '../../engine/torrent_facade.dart';
@@ -18,6 +19,7 @@ import '../screens/player_screen.dart';
 import '../screens/search_screen.dart';
 import '../screens/settings_screen.dart';
 import '../screens/splash_screen.dart';
+import '../screens/update_required_screen.dart';
 import '../widgets/common.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -35,6 +37,21 @@ final Provider<OpenSubtitlesService> openSubtitlesProvider =
 
 final Provider<SettingsStore> settingsStoreProvider =
     Provider<SettingsStore>((Ref ref) => SettingsStore());
+
+final Provider<UpdateService> updateServiceProvider =
+    Provider<UpdateService>((Ref ref) => UpdateService());
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Update gate
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Resolved once per launch (and again on manual retry): when the returned
+/// status requires an update, the router pins the app to
+/// `/update-required` — every other route is redirected there.
+final FutureProvider<UpdateStatus> updateGateProvider =
+    FutureProvider<UpdateStatus>((Ref ref) async {
+  return ref.watch(updateServiceProvider).evaluate();
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Engine bootstrap
@@ -208,13 +225,37 @@ class PlayerArgs {
 }
 
 final Provider<GoRouter> routerProvider = Provider<GoRouter>((Ref ref) {
+  // Re-evaluate redirects whenever the update gate resolves or changes
+  // (startup check, manual retry).
+  final ValueNotifier<int> refresh = ValueNotifier<int>(0);
+  ref.listen<AsyncValue<UpdateStatus>>(
+    updateGateProvider,
+    (AsyncValue<UpdateStatus>? _, AsyncValue<UpdateStatus> __) =>
+        refresh.value++,
+  );
+  ref.onDispose(refresh.dispose);
+
   return GoRouter(
     initialLocation: '/splash',
+    refreshListenable: refresh,
+    redirect: (BuildContext context, GoRouterState state) {
+      final bool blocked = ref.read(updateGateProvider).value?.updateRequired ??
+          false;
+      final bool onGate = state.matchedLocation == '/update-required';
+      if (blocked && !onGate) return '/update-required';
+      if (!blocked && onGate) return '/splash';
+      return null;
+    },
     routes: <RouteBase>[
       GoRoute(
         path: '/splash',
         builder: (BuildContext context, GoRouterState state) =>
             const SplashScreen(),
+      ),
+      GoRoute(
+        path: '/update-required',
+        builder: (BuildContext context, GoRouterState state) =>
+            const UpdateRequiredScreen(),
       ),
       StatefulShellRoute.indexedStack(
         builder: (BuildContext context, GoRouterState state,

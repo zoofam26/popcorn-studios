@@ -167,6 +167,7 @@ Future<void> _runFlow(
     prepared = await facade.prepare(
       magnetUri: torrent.magnetUri,
       torrentUrl: torrent.torrentUrl,
+      infoHash: torrent.infoHash,
       tmdbId: detail.movie.id,
       posterUrl: detail.movie.posterUrl,
       qualityLabel: torrent.quality,

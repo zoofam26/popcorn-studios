@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../core/theme.dart';
 import '../../core/utils/format.dart';
+import '../../data/magnet_builder.dart' show extractInfoHash;
 import '../../domain/models.dart';
 import '../providers/app_providers.dart';
 import '../widgets/common.dart';
@@ -172,6 +173,7 @@ class _DownloadsScreenState extends ConsumerState<DownloadsScreen> {
       final PreparedTorrent prepared = await facade.prepare(
         magnetUri: isSourceUrl ? null : input,
         torrentUrl: isSourceUrl ? input : null,
+        infoHash: isSourceUrl ? null : extractInfoHash(input),
         friendlyTitle: _titleFromLink(input),
       );
       if (!mounted) return;

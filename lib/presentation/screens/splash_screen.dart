@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../core/constants.dart';
 import '../../core/theme.dart';
+import '../../data/update_service.dart';
 import '../../engine/torrent_facade.dart';
 import '../providers/app_providers.dart';
 
@@ -36,6 +37,27 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
   }
 
   Future<void> _bootstrap() async {
+    // The update gate decides where this launch may go: blocked installs
+    // never reach the app (and never warm the engine). The check itself is
+    // time-boxed and fails open, so this can never hang the intro.
+    try {
+      final UpdateStatus gate =
+          await ref.read(updateGateProvider.future).timeout(
+                const Duration(seconds: 10),
+                onTimeout: () => UpdateStatus(
+                  currentVersion: AppConstants.appVersion,
+                  updateRequired: false,
+                  checkFailed: true,
+                ),
+              );
+      if (gate.updateRequired) {
+        if (mounted) context.go('/update-required');
+        return;
+      }
+    } catch (_) {
+      // Gate unavailable — fail open, the router re-checks later anyway.
+    }
+
     // Warm the engine without ever blocking navigation.
     unawaited(
       ref.read(engineReadyProvider.future).then<void>(

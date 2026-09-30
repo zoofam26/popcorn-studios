@@ -13,7 +13,7 @@ class AppConstants {
   static const String openSubtitlesBaseUrl =
       'https://api.opensubtitles.com/api/v1';
   static const String openSubtitlesApiKey = 'tW8f2Of8mxchIgsx9VWOiNC9l0xyLY8K';
-  static const String openSubtitlesUserAgent = 'PopcornStudio v1.1.0';
+  static const String openSubtitlesUserAgent = 'PopcornStudio v1.2.0';
 
   // ── Stream providers (Stremio-style addons) ─────────────────────────────
   /// Torrentio — the stream addon used by Stremio (aggregates ThePirateBay+,
@@ -43,6 +43,15 @@ class AppConstants {
   /// Fallback .torrent resolution for bare magnets (best effort).
   static const String itorrentsTemplate =
       'https://itorrents.org/torrent/%HASH%.torrent';
+
+  // ── Self-update ─────────────────────────────────────────────────────────
+  /// Where the app checks for newer releases at startup. Old builds are
+  /// locked to an "update required" screen whenever a newer version is
+  /// published here.
+  static const String latestReleaseUrl =
+      'https://api.github.com/repos/zoofam26/popcorn-studios/releases/latest';
+  static const String releasePageUrl =
+      'https://github.com/zoofam26/popcorn-studios/releases/latest';
 
   // ── Streaming engine tuning ────────────────────────────────────────
   /// aria2 is rarest-first by default; head/tail prioritisation is the lever
@@ -104,7 +113,7 @@ class AppConstants {
   };
 
   static const String appTitle = 'Popcorn Studio';
-  static const String appVersion = '1.1.0';
+  static const String appVersion = '1.2.0';
 
   /// Launch-screen tagline.
   static const String splashTagline = 'Every story deserves a front-row seat.';

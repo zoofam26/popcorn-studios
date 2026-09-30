@@ -35,6 +35,15 @@ into one polished experience.
 - **Robust engine** — bundled static **aria2 1.37.0** (C++) controlled over
   JSON-RPC, DHT enabled, extra trackers injected into every source link, session
   persistence across restarts, pause/resume/remove.
+- **Instant source resolution** — when a source's info hash is known (stream
+  addons always provide it), the .torrent descriptor is fetched over HTTPS and
+  the file list appears in seconds — no waiting on swarm metadata — then the
+  download runs with the full peer set. Fallback to classic metadata exchange
+  is automatic.
+- **Forced self-update** — every launch checks GitHub Releases; when a newer
+  version is published, older installs are locked to an "Update required"
+  screen (no playback, no downloads) with a direct link to the new build.
+  The check fails open while offline so a flaky connection never bricks the app.
 
 ## Architecture
 

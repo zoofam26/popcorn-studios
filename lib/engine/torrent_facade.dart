@@ -4,6 +4,7 @@ import 'dart:io';
 import '../core/constants.dart';
 import '../core/errors.dart';
 import '../domain/models.dart';
+import '../data/magnet_builder.dart' show extractInfoHash;
 import 'aria2_rpc_client.dart';
 import 'engine_manager.dart';
 import 'stream_server.dart';
@@ -119,6 +120,9 @@ class TorrentFacade {
 
   Aria2RpcClient get rpc => _engine.rpc;
 
+  /// Exposed for the Settings diagnostics panel.
+  Aria2Engine get engine => _engine;
+
   Stream<List<TorrentTask>> get tasksStream => _tasksController.stream;
 
   List<TaskRecord> get records => _records.values.toList(growable: false);
@@ -134,6 +138,7 @@ class TorrentFacade {
     String? magnetUri,
     String? torrentUrl,
     List<int>? torrentBytes,
+    String? infoHash,
     int? tmdbId,
     String? posterUrl,
     String? qualityLabel,
@@ -164,6 +169,7 @@ class TorrentFacade {
     return _prepareFromMagnet(
       magnetUri,
       downloadDir,
+      infoHashHint: (infoHash != null && infoHash.isNotEmpty) ? infoHash : null,
       tmdbId: tmdbId,
       posterUrl: posterUrl,
       qualityLabel: qualityLabel,
@@ -184,7 +190,16 @@ class TorrentFacade {
       bytes,
       options: <String, String>{'dir': downloadDir, 'pause': 'true'},
     );
-    final Map<String, dynamic> status = await _waitUntilFilesReady(gid);
+    Map<String, dynamic> status;
+    try {
+      status = await _waitUntilFilesReady(gid);
+    } on Exception {
+      // Never leave the paused placeholder behind on failure.
+      try {
+        await rpc.forceRemove(gid);
+      } catch (_) {}
+      rethrow;
+    }
     final String infoHash = (status['infoHash'] as String?) ?? '';
     final String name = _displayName(status) ??
         (friendlyTitle?.isNotEmpty ?? false
@@ -209,6 +224,7 @@ class TorrentFacade {
   Future<PreparedTorrent> _prepareFromMagnet(
     String magnetUri,
     String downloadDir, {
+    String? infoHashHint,
     int? tmdbId,
     String? posterUrl,
     String? qualityLabel,
@@ -216,6 +232,46 @@ class TorrentFacade {
     void Function(String stage)? onStage,
   }) async {
     onStage?.call('Reading source details…');
+
+    // ── Fast path (Stremio-style) ────────────────────────────────────────
+    // When the v1 info hash is already known (stream addons always provide
+    // it), fetch the .torrent descriptor over HTTPS instead of waiting for
+    // the swarm's metadata exchange. The file list then appears in seconds
+    // even on mobile networks where DHT bootstrap is slow — and the actual
+    // download still runs with the full tracker + DHT peer set from the
+    // magnet. Any failure here silently falls back to the classic flow.
+    final String? hashHint =
+        (infoHashHint != null && infoHashHint.isNotEmpty)
+            ? infoHashHint.toUpperCase()
+            : extractInfoHash(magnetUri);
+    if (hashHint != null && hashHint.length == 40) {
+      try {
+        final List<int>? descriptor = await _tryFetchTorrentByHash(hashHint);
+        if (descriptor != null && descriptor.isNotEmpty) {
+          final PreparedTorrent fast = await _prepareFromTorrentBytes(
+            descriptor,
+            downloadDir,
+            tmdbId: tmdbId,
+            posterUrl: posterUrl,
+            qualityLabel: qualityLabel,
+            friendlyTitle: friendlyTitle,
+          );
+          if (fast.videoFiles.isNotEmpty) {
+            onStage?.call('Source details resolved');
+            return fast;
+          }
+          // Descriptor resolved but contains no video (e.g. a disc image
+          // bundle) — still better than nothing: keep it as the result so
+          // the caller reports "no playable video" for THIS source instead
+          // of hanging on metadata again.
+          onStage?.call('Source details resolved');
+          return fast;
+        }
+      } on Exception {
+        // Descriptor unavailable — continue with the magnet below.
+      }
+    }
+
     final String gid = await rpc.addUri(
       <String>[magnetUri],
       options: <String, String>{

@@ -28,3 +28,4 @@ linux/engine/
 # Misc
 *.bak
 .DS_Store
+.tmp/

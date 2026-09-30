@@ -106,6 +106,10 @@ class Aria2Engine {
 
   static const String _tag = 'Aria2Engine';
 
+  /// How long we give a freshly spawned engine to either stay alive (if it
+  /// needs time to bind the RPC port) or die with a diagnosable exit code.
+  static const Duration _spawnProbeWindow = Duration(seconds: 4);
+
   final EnginePaths paths;
   final PortPicker _portPicker;
   final RandomSecret _randomSecret;
@@ -116,6 +120,25 @@ class Aria2Engine {
   String? _secret;
   IOSink? _logSink;
   bool _stopping = false;
+
+  /// Last engine output lines (stdout+stderr), newest last. Kept so an
+  /// immediate crash can be reported with the engine's own words.
+  final List<String> _outputTail = <String>[];
+
+  /// A snapshot of the engine's own recent output — surfaced in errors and
+  /// the Settings diagnostics panel.
+  List<String> get outputTail =>
+      List<String>.unmodifiable(_outputTail.sublist(
+        _outputTail.length > 40 ? _outputTail.length - 40 : 0,
+      ));
+
+  String? get lastErrorDetail => _lastErrorDetail;
+  String? _lastErrorDetail;
+
+  void _record(String line) {
+    _outputTail.add(line);
+    if (_outputTail.length > 200) _outputTail.removeRange(0, 100);
+  }
 
   Aria2RpcClient get rpc {
     final Aria2RpcClient? client = _rpc;
@@ -156,8 +179,32 @@ class Aria2Engine {
     final String secret = _randomSecret.generate();
     final List<String> candidates = paths.binaryCandidates();
 
-    Object? lastError;
+    // Android/desktop: verify bundled binaries exist BEFORE trying to exec
+    // them, so a missing extraction produces an actionable message instead
+    // of a bare ENOENT.
+    final List<String> launchable = <String>[];
     for (final String candidate in candidates) {
+      final File f = File(candidate);
+      if (f.existsSync()) {
+        launchable.add(candidate);
+      } else {
+        writeLog('$_tag: candidate not found on disk: $candidate');
+      }
+    }
+    if (launchable.isEmpty) {
+      _lastErrorDetail =
+          'The playback engine binary was not found on this device. '
+          'Expected at: ${candidates.join(", ")}';
+      await _logSink?.flush();
+      throw EngineException(
+        'The playback engine binary could not be found on this device. '
+        'Reinstall the app so its engine component is restored, then '
+        'try again.',
+      );
+    }
+
+    Object? lastError;
+    for (final String candidate in launchable) {
       try {
         final List<String> args = <String>[
           '--enable-rpc=true',
@@ -186,6 +233,9 @@ class Aria2Engine {
           '--seed-ratio=${seedRatio ?? '0'}',
           '--max-overall-download-limit=${maxOverallDownloadLimit ?? '0'}',
           '--user-agent=PopcornStudio/${AppConstants.appVersion}',
+          // Exit together with the app process — prevents orphaned engines
+          // and phantom-process buildup on Android 12+.
+          '--stop-with-process=$pid',
         ];
         if (File(paths.sessionFilePath).existsSync()) {
           args.add('--input-file=${paths.sessionFilePath}');
@@ -202,11 +252,17 @@ class Aria2Engine {
         process.stdout
             .transform(utf8.decoder)
             .transform(const LineSplitter())
-            .listen(writeLog, onError: (Object _) {});
+            .listen((String line) {
+          _record(line);
+          writeLog(line);
+        }, onError: (Object _) {});
         process.stderr
             .transform(utf8.decoder)
             .transform(const LineSplitter())
-            .listen(writeLog, onError: (Object _) {});
+            .listen((String line) {
+          _record(line);
+          writeLog(line);
+        }, onError: (Object _) {});
         unawaited(
           process.exitCode.then((int code) {
             writeLog('$_tag: exited with code $code');
@@ -216,10 +272,36 @@ class Aria2Engine {
             }
           }),
         );
+
+        // Detect engines that die instantly (bad binary, ROM restriction,
+        // missing libs) and surface WHY instead of burning the full health
+        // check and failing with a generic message.
+        final int exitCode = await process.exitCode
+            .timeout(_spawnProbeWindow, onTimeout: () => -1);
+        if (exitCode != -1 && !_stopping) {
+          // The engine's dying words can arrive on the stdout/stderr
+          // streams just after the exit event — let them flush first.
+          await Future<void>.delayed(const Duration(milliseconds: 300));
+          _process = null;
+          final String tail = _outputTail.isEmpty
+              ? 'no output captured'
+              : _outputTail.take(12).join(' | ');
+          _lastErrorDetail =
+              'Engine process exited immediately (code $exitCode): $tail';
+          writeLog('$_tag: $_lastErrorDetail');
+          _rpc = null;
+          await _logSink?.flush();
+          throw EngineException(
+            'The playback engine exited immediately after starting '
+            '(code $exitCode). This usually means the engine component is '
+            'incompatible with this device. Details: $tail',
+          );
+        }
         break;
       } on ProcessException catch (e) {
         lastError = e;
-        writeLog('$_tag: failed to launch $candidate: ${e.message}');
+        _lastErrorDetail = 'failed to launch $candidate: ${e.message}';
+        writeLog('$_tag: $_lastErrorDetail');
         continue;
       }
     }
@@ -227,8 +309,9 @@ class Aria2Engine {
     if (_process == null) {
       await _logSink?.flush();
       throw EngineException(
-        'Could not start the download engine. No aria2 binary could be '
-        'launched. Tried: ${candidates.join(', ')}',
+        'Could not start the playback engine on this device. '
+        'Tried: ${launchable.join(", ")}. '
+        'Reason: ${_lastErrorDetail ?? lastError ?? 'unknown'}',
         cause: lastError,
       );
     }
@@ -249,9 +332,15 @@ class Aria2Engine {
       }
     }
     if (!healthy) {
+      final String tail = outputTail.isEmpty
+          ? 'no output captured'
+          : outputTail.take(12).join(' | ');
+      _lastErrorDetail = 'RPC never became ready: $tail';
       await stop();
-      throw const EngineException(
-          'aria2 started but its RPC never became ready');
+      throw EngineException(
+        'The playback engine started but did not accept commands on this '
+        'device. Details: $tail',
+      );
     }
     writeLog('$_tag: RPC ready on port $rpcPort');
   }
@@ -271,6 +360,21 @@ class Aria2Engine {
     await _logSink?.flush();
     await _logSink?.close();
     _logSink = null;
+  }
+
+  /// Reads the last [lines] lines of the engine log file for diagnostics.
+  Future<List<String>> readLogTail({int lines = 30}) async {
+    try {
+      final File file = File(paths.logFilePath);
+      if (!await file.exists()) return const <String>[];
+      final List<String> all =
+          await file.readAsLines().timeout(const Duration(seconds: 3));
+      return all.length <= lines
+          ? all
+          : all.sublist(all.length - lines);
+    } catch (_) {
+      return const <String>[];
+    }
   }
 
   /// Applies global option changes without restarting.

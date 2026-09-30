@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../core/constants.dart';
 import '../../core/theme.dart';
 import '../providers/app_providers.dart';
+import '../../data/update_service.dart';
 import '../../domain/models.dart';
 
 /// Settings: subtitle preferences, bandwidth limits, sharing policy,
@@ -189,20 +192,52 @@ class SettingsScreen extends ConsumerWidget {
           const SizedBox(height: 6),
           FutureBuilder<String>(
             future: _engineInfo(ref),
-            builder: (BuildContext context, AsyncSnapshot<String> snap) =>
-                Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(14),
-              decoration: _box(),
-              child: Text(
-                snap.data ?? 'Engine starting…',
-                style: const TextStyle(
-                  fontSize: 12.5,
-                  color: AppTheme.textSecondary,
-                  height: 1.5,
+            builder: (BuildContext context, AsyncSnapshot<String> snap) {
+              final String text = snap.data ?? 'Engine starting…';
+              return Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(14),
+                decoration: _box(),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(
+                      text,
+                      style: const TextStyle(
+                        fontSize: 12.5,
+                        color: AppTheme.textSecondary,
+                        height: 1.5,
+                      ),
+                    ),
+                    if (snap.hasData) ...<Widget>[
+                      const SizedBox(height: 10),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: TextButton.icon(
+                          style: TextButton.styleFrom(
+                            visualDensity: VisualDensity.compact,
+                            foregroundColor: AppTheme.textSecondary,
+                          ),
+                          onPressed: () async {
+                            await Clipboard.setData(
+                                ClipboardData(text: snap.data!));
+                            if (context.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                    content: Text(
+                                        'Engine diagnostics copied to clipboard')),
+                              );
+                            }
+                          },
+                          icon: const Icon(Icons.copy_rounded, size: 16),
+                          label: const Text('Copy diagnostics'),
+                        ),
+                      ),
+                    ],
+                  ],
                 ),
-              ),
-            ),
+              );
+            },
           ),
           const SizedBox(height: 20),
           _SectionHeader('About'),
@@ -227,6 +262,19 @@ class SettingsScreen extends ConsumerWidget {
                   style: TextStyle(fontWeight: FontWeight.w800),
                 ),
                 const SizedBox(height: 8),
+                OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.white,
+                    side: const BorderSide(color: AppTheme.divider),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                  onPressed: () => _checkForUpdates(context, ref),
+                  icon: const Icon(Icons.system_update_alt_rounded, size: 18),
+                  label: const Text('Check for updates'),
+                ),
+                const SizedBox(height: 10),
                 const Text(
                   'Popcorn Studio pulls media from public third-party '
                   'sources and ships no content of its own: you are '
@@ -248,17 +296,78 @@ class SettingsScreen extends ConsumerWidget {
     );
   }
 
+  /// Rich, copyable diagnostics so any playback problem can be reported
+  /// (and fixed) without adb logcat: engine state, binary location, the
+  /// engine's own last words and the persistent log tail.
   Future<String> _engineInfo(WidgetRef ref) async {
+    final StringBuffer buffer = StringBuffer();
     try {
       final engine = await ref.read(engineReadyProvider.future);
-      final String version = await engine.rpc.getVersion();
-      final String port = '${engine.streamServer.port}';
-      return 'Playback engine: v$version\n'
-          'Local player server: 127.0.0.1:$port\n'
-          'Fast-start: enabled (head-first buffering)';
+      String version = '?';
+      try {
+        version = await engine.rpc.getVersion();
+      } catch (_) {}
+      buffer
+        ..writeln('Status: running (engine v$version)')
+        ..writeln('Local player server: 127.0.0.1:${engine.streamServer.port}')
+        ..writeln('Fast-start: enabled (head-first buffering)');
     } catch (e) {
-      return 'Playback engine offline. Open the Downloads tab and tap '
-          'retry to start it.';
+      buffer.writeln('Status: not running');
+      buffer.writeln('Reason: $e');
+    }
+    try {
+      final engineReady = ref.read(engineReadyProvider).value;
+      if (engineReady != null) {
+        final paths = engineReady.engine.paths;
+        buffer.writeln('Downloads folder: ${paths.downloadDir}');
+      }
+    } catch (_) {}
+    try {
+      final engine = ref.read(engineReadyProvider).value;
+      if (engine != null) {
+        final tail = engine.engine.outputTail;
+        if (tail.isNotEmpty) {
+          buffer
+            ..writeln('Engine output (last lines):')
+            ..writeAll(tail.take(12).map((String l) => '  $l'), '\n');
+        }
+        final log = await engine.engine.readLogTail(lines: 20);
+        if (log.isNotEmpty) {
+          buffer
+            ..writeln('Engine log (last lines):')
+            ..writeAll(log.map((String l) => '  $l'), '\n');
+        }
+      }
+    } catch (_) {}
+    return buffer.toString().trimRight();
+  }
+
+  Future<void> _checkForUpdates(BuildContext context, WidgetRef ref) async {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        duration: Duration(seconds: 2),
+        content: Text('Checking for updates…'),
+      ),
+    );
+    final UpdateStatus status =
+        await ref.read(updateServiceProvider).checkNow();
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).hideCurrentSnackBar();
+    if (status.updateRequired) {
+      ref.invalidate(updateGateProvider);
+      if (context.mounted) context.push('/update-required');
+    } else if (status.checkFailed) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('Could not reach the update service. '
+                'Check your connection and try again.')),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text(
+                'You are up to date (version ${status.currentVersion}).')),
+      );
     }
   }
 
